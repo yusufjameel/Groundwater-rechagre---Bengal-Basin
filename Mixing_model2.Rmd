@@ -1,0 +1,686 @@
+---
+title: "Prop_surf_precip"
+author: "Yusuf Jameel"
+date: "9/9/2019"
+output: html_document
+---
+
+
+
+```{r include=FALSE}
+library(tidyverse)
+library(ggplot2)
+library(gridExtra)
+library(dplyr)
+library(mvtnorm)
+library(lubridate)
+library(MASS)
+setwd("/Users/yusufjameel/Dropbox/Arsenic_MIT/data_prior/isotope_analysis/data")
+source("./Functions/As_mM_to_ppb.R")
+source("./Functions/As_ppb_to_mM.R")
+source("./Functions/Categorize_As_many_levels.R")
+source("./Functions/Categorize_depths.R")
+source("./Functions/Generate_gridded_data.R")
+source("./Functions/Make_maps.R")
+source("./Functions/load_powell_database.R")
+source("./Functions/Make_raster_maps.R")
+source("./Functions/Make_tm_maps.R")
+source("./Functions/Make_interactive_map_any.R")
+source("./Functions/Make_interactive_map_Dex.R")
+source("./Functions/Make_interactive_map_As_styling_bgs.R")
+```
+
+##Loading data from the database 
+
+```{r}
+Arsenic_db <- load_powell_database()
+```
+
+<br/>
+###subsetting isotope data (including depth and study_ID as well) only for Bengal
+
+
+```{r include =FALSE}
+As_iso = subset(Arsenic_db, Arsenic_db$d18O__permil != "NA")
+iso_data = subset(As_iso, As_iso$Country == "India" | As_iso$Country == "Bangladesh")
+iso_Beng= data.frame(cbind(iso_data$Sample_ID, iso_data$Country, iso_data$Study_ID, iso_data$Water_Source, iso_data$Depth__m, iso_data$d18O__permil, iso_data$d2H__permil, iso_data$Long, iso_data$Lat))
+
+colnames(iso_Beng) = c("Sample_ID", "Country", "Study_ID", "Water_Source","Depth_m", "d18O","d2H", "Long", "Lat")
+
+iso_Beng$d18O = as.numeric(levels(iso_Beng$d18O))[iso_Beng$d18O]
+iso_Beng$d2H = as.numeric(levels(iso_Beng$d2H))[iso_Beng$d2H]
+iso_Beng$Long = as.numeric(levels(iso_Beng$Long))[iso_Beng$Long]
+iso_Beng$Lat = as.numeric(levels(iso_Beng$Lat))[iso_Beng$Lat]
+iso_Beng_gw = subset(iso_Beng, iso_Beng$Water_Source == "GW")
+iso_Beng_sw = subset(iso_Beng, iso_Beng$Water_Source == "SW")
+iso_Beng_sw$Depth_m = 0
+
+
+iso_Beng_precip = iso_Beng[which(iso_Beng$Water_Source == "PRECIP"),]
+iso_Beng_precip$Date_sampled = NA
+iso_Beng_precip$Rainfall_amount = NA
+iso_Beng_precip$Month = NA
+
+iso_Beng_precip = iso_Beng_precip[,c(1,6,7,4,10,3,11,5,2,9,8,12)]
+names(iso_Beng_precip)[10] = "Latitude" 
+names(iso_Beng_precip)[11] = "Longitude" 
+
+
+
+Precip_isotope_other <-read.csv('Precip_isotopes2.csv', as.is = T)
+Precip_isotope_other <-subset(Precip_isotope_other, Precip_isotope_other$Country %in% c("India", "Bangladesh"))
+Precip_isotope_other <-subset(Precip_isotope_other, !(Precip_isotope_other$Sample_ID == "SHILLONG"))
+Precip_isotope_other = Precip_isotope_other[,-12]
+
+#########SPATIAL DATABASE
+
+Precip_spatial_DB <-read.csv('Precip_bengal_spatial_DB.csv', as.is = T)
+Precip_spatial_DB  <- Precip_spatial_DB[,c(1,14,15,16,13,21,2,3)]
+Precip_spatial_DB = Precip_spatial_DB[-which(is.na(Precip_spatial_DB$d18O)),]
+#aa = which(Precip_spatial_DB$d2H == 9999)
+#Precip_spatial_DB  <- Precip_spatial_DB[-aa,]
+Precip_spatial_DB$Water_Source ="Precip"
+Precip_spatial_DB$Study_ID = "Spatial_DB"
+#Precip_spatial_DB$Rainfall_amount = "NA"
+Precip_spatial_DB$Depth_m = 0
+Precip_spatial_DB$Country = "Bangladesh"
+names(Precip_spatial_DB)[5] <- "Date_sampled"
+names(Precip_spatial_DB)[1] <- "Sample_ID"
+#Precip_spatial_DB$Month = month(ymd(Precip_spatial_DB$Date_sampled))
+Precip_spatial_DB = Precip_spatial_DB[c(1,2,3,9,5,10,4,11,12,7,8,6)]
+
+
+## Join all the precip data together
+d18O_all =c(Precip_spatial_DB$d18O,Precip_isotope_other$d18O,iso_Beng_precip$d18O)
+d2H_all = c(Precip_spatial_DB$d2H,Precip_isotope_other$d2H,iso_Beng_precip$d2H)
+rain_amt_all = c(Precip_spatial_DB$Rainfall_amount,Precip_isotope_other$Rainfall_amount,iso_Beng_precip$Rainfall_amount)
+Dex = d2H_all - 8*d18O_all
+
+aa = which(rain_amt_all  > 0)
+oxy_amount = rain_amt_all[aa]*d18O_all[aa]
+oxy_amount_wt = sum(oxy_amount)/sum(rain_amt_all[aa])
+hydro_amount = rain_amt_all[aa]*d2H_all[aa]
+hydro_amount_wt = sum(hydro_amount)/sum(rain_amt_all[aa])
+
+```
+
+
+## LMWL for Bengal, Dhaka and Kolkata
+
+
+```{r include = F}
+LMWL_Bengal <- lm(d2H_all ~ d18O_all)
+
+```
+
+##### let's calculate the amount weighted mean and standard deviation
+```{r}
+
+### let's get standard deviation /variance^2
+
+Rainfall_fraction = rain_amt_all/sum(rain_amt_all[aa])
+
+var_hydro =sum(rain_amt_all[aa]*(d2H_all[aa] - hydro_amount_wt)^2)/(((length(aa)-1)*sum(rain_amt_all[aa]))/(length(aa)))
+var_oxy =sum(rain_amt_all[aa]*(d18O_all[aa] - oxy_amount_wt)^2)/(((length(aa)-1)*sum(rain_amt_all[aa]))/(length(aa)))
+
+
+c_oh = cor(d18O_all[aa],d2H_all[aa])*(var_hydro*var_oxy)^0.5
+h_precip_mean = hydro_amount_wt 
+o_precip_mean = oxy_amount_wt
+kk = rmvnorm(5000, c(o_precip_mean,h_precip_mean), matrix(c(var_oxy, rep(c_oh,2), var_hydro),2,2))
+plot(kk[,1], kk[,2])
+abline(LMWL_Bengal$coefficients[1],LMWL_Bengal$coefficients[2], lwd = 1, lty= 2, col = "blue")
+grid()
+
+```
+
+```{r}
+bivn.kde <- kde2d(kk[,1], kk[,2], n = 500)
+image(bivn.kde,  xlim = c(-17,4), ylim = c(-130,30), xlab = "d18O", ylab = "d2H")
+#points(kk[,1], kk[,2], alpha = 0.8 )
+grid()
+contour(bivn.kde, add = TRUE, lwd = 0.5)
+abline(LMWL_Bengal$coefficients[1],LMWL_Bengal$coefficients[2], lwd = 1, lty= 2, col = "blue")
+title("weighted precip isotope distri")
+##############
+```
+
+```{r}
+sum(sum(Rainfall_fraction[which(d18O_all>= 0)], na.rm=T),
+sum(Rainfall_fraction[which(d18O_all >= -2 & d18O_all < 0)], na.rm=T),
+sum(Rainfall_fraction[c(which(d18O_all >= -4 & d18O_all < -2))], na.rm=T),
+sum(Rainfall_fraction[c(which(d18O_all >= -6 & d18O_all < -4))], na.rm=T),
+sum(Rainfall_fraction[c(which(d18O_all >= -8 & d18O_all < -6))], na.rm=T),
+sum(Rainfall_fraction[c(which(d18O_all >= -10 & d18O_all < -8))], na.rm=T),
+sum(Rainfall_fraction[c(which(d18O_all >= -12 & d18O_all < -10))], na.rm=T),
+sum(Rainfall_fraction[c(which(d18O_all >= -14 & d18O_all < -12))], na.rm=T),
+sum(Rainfall_fraction[which(d18O_all < -14)], na.rm=T))
+
+rain_amt_group = c(sum(Rainfall_fraction[which(d18O_all>= 0)], na.rm=T),
+sum(Rainfall_fraction[which(d18O_all >= -2 & d18O_all < 0)], na.rm=T),
+sum(Rainfall_fraction[c(which(d18O_all >= -4 & d18O_all < -2))], na.rm=T),
+sum(Rainfall_fraction[c(which(d18O_all >= -6 & d18O_all < -4))], na.rm=T),
+sum(Rainfall_fraction[c(which(d18O_all >= -8 & d18O_all < -6))], na.rm=T),
+sum(Rainfall_fraction[c(which(d18O_all >= -10 & d18O_all < -8))], na.rm=T),
+sum(Rainfall_fraction[c(which(d18O_all >= -12 & d18O_all < -10))], na.rm=T),
+sum(Rainfall_fraction[c(which(d18O_all >= -14 & d18O_all < -12))], na.rm=T),
+sum(Rainfall_fraction[which(d18O_all < -14)], na.rm=T))
+
+isotope_group = c(1,-1,-3,-5,-7,-9,-11,-13,-15)
+
+precip_amount_number = floor(rain_amt_group*500)
+grt_0 = kk[which (kk[,1] >0),]
+btw_0_2 = kk[which (kk[,1] <= 0 & kk[,1] > -2),]
+btw_2_4 = kk[which (kk[,1] <= -2 & kk[,1] > -4),]
+btw_4_6 = kk[which (kk[,1] <= -4 & kk[,1] > -6),]
+btw_6_8 = kk[which (kk[,1] <= -6 & kk[,1] > -8),]
+btw_8_10 = kk[which (kk[,1] <= -8 & kk[,1] > -10),]
+btw_10_12 = kk[which (kk[,1] <= -10 & kk[,1] > -12),]
+btw_12_14 = kk[which (kk[,1] <= -12 & kk[,1] > -14),]
+less_14 = kk[which (kk[,1] <= -14),]
+
+jj = rbind(grt_0[sample(nrow(grt_0), precip_amount_number[1]), ],
+btw_0_2[sample(nrow(btw_0_2), precip_amount_number[2]), ],
+btw_2_4[sample(nrow(btw_2_4), precip_amount_number[3]), ],
+btw_4_6[sample(nrow(btw_4_6), precip_amount_number[4]), ],
+btw_6_8[sample(nrow(btw_6_8), precip_amount_number[5]), ],
+btw_8_10[sample(nrow(btw_8_10), precip_amount_number[6]), ],
+btw_10_12[sample(nrow(btw_10_12), precip_amount_number[7]), ],
+btw_12_14[sample(nrow(btw_12_14), precip_amount_number[8]), ],
+less_14[sample(nrow(less_14), precip_amount_number[9]), ])
+
+##############
+btw_2_8 = kk[which (kk[,1] <= -2 & kk[,1] > -8),]
+btw_8_12 = kk[which (kk[,1] <= -8 & kk[,1] > -12),]
+
+jj1 = rbind(grt_0[sample(nrow(grt_0), precip_amount_number[1]), ],
+btw_0_2[sample(nrow(btw_0_2), precip_amount_number[2]), ],
+btw_2_8[sample(nrow(btw_2_8), sum(precip_amount_number[3],precip_amount_number[4],precip_amount_number[5])), ],
+#btw_4_6[sample(nrow(btw_4_6), precip_amount_number[4]), ],
+#btw_6_8[sample(nrow(btw_6_8), precip_amount_number[5]), ],
+btw_8_12[sample(nrow(btw_8_12), sum(precip_amount_number[6],precip_amount_number[7])), ],
+#btw_10_12[sample(nrow(btw_10_12), precip_amount_number[7]), ],
+btw_12_14[sample(nrow(btw_12_14), precip_amount_number[8]), ],
+less_14[sample(nrow(less_14), precip_amount_number[9]), ])
+plot(density(jj1[,1]))
+```
+
+```{r}
+barplot(rev(rain_amt_group*100),main = "Rainfall proportion by isotope",
+xlab = "Precipitation d18O",
+ylab = "Percentage rainfall",
+names.arg = c("<-15","-13","-11","-9","-7","-5", "-3","-1" , ">0"),
+col = "darkred",
+horiz = F)
+
+
+########plot amouut weighted bivariate distribution
+h_precip_mean1 = mean(d2H_all[aa], na.rm=T)
+o_precip_mean1 = mean(d18O_all[aa], na.rm=T)
+
+var_hydro1 = var(d2H_all[aa], na.rm = T)
+var_oxy1 = var(d18O_all[aa], na.rm=T)
+c_oh1 = cov(d2H_all[aa], d18O_all[aa])
+kk1 = rmvnorm(10000, c(o_precip_mean1,h_precip_mean1), matrix(c(var_oxy1, rep(c_oh1,2), var_hydro1),2,2))
+#plot(kk1[,1], kk1[,2])
+#abline(10,8)
+#grid()
+```
+
+```{r}
+#########Plot density
+bivn.kde1 <- kde2d(kk1[,1], kk1[,2], n = 500)
+image(bivn.kde1,  xlim = c(-17,4), ylim = c(-130,30), xlab = "d18O", ylab = "d2H")
+#points(kk[,1], kk[,2], alpha = 0.8 )
+grid()
+contour(bivn.kde1, add = TRUE, lwd = 0.5)
+abline(LMWL_Bengal$coefficients[1],LMWL_Bengal$coefficients[2], lwd = 1, lty= 2, col = "blue")
+title("unweighted precip isotope distri")
+#######
+```
+
+
+### Importing the surface water data
+
+We have only kept the isotope data with depth
+
+```{r}
+SW_isotope <- read.csv('SW_isotopes.csv', as.is = T)
+SW_Bengal = data.frame(cbind(SW_isotope$Sample_ID, SW_isotope$Country, SW_isotope$Study_ID, 
+                             SW_isotope$Water_Source , SW_isotope$Depth_m,
+                             SW_isotope$d18O, SW_isotope$d2H, SW_isotope$Long, SW_isotope$Lat))
+colnames(SW_Bengal) = c("Sample_ID", "Country", "Study_ID", "Water_Source","Depth_m", "d18O","d2H", "Long", "Lat")
+```
+
+<br/>
+
+### Surface water data
+
+```{r}
+isotope_bengal_sw = data.frame(rbind(SW_Bengal,iso_Beng_sw))
+isotope_bengal_sw = subset(isotope_bengal_sw, isotope_bengal_sw$d2H != "NA")
+isotope_bengal_sw = subset(isotope_bengal_sw, isotope_bengal_sw$d18O != "NA")
+isotope_bengal_sw$d18O = as.numeric(as.character(isotope_bengal_sw$d18O))
+isotope_bengal_sw$d2H = as.numeric(as.character(isotope_bengal_sw$d2H))
+isotope_bengal_sw$Depth_m = as.numeric(as.character(isotope_bengal_sw$Depth_m))
+isotope_bengal_sw$Dex = isotope_bengal_sw$d2H - 8*isotope_bengal_sw$d18O
+
+riv = isotope_bengal_sw %>%
+  filter(d18O < -7.5 & d2H >-60 & d2H < -50)    
+
+surfw = isotope_bengal_sw %>%
+  filter(d18O > -7.5)   
+
+surfw = isotope_bengal_sw 
+
+LEL_Bengal = lm(surfw$d2H ~surfw$d18O)
+LEL_Bengal_low = predict(LEL_Bengal, interval = "prediction")[,2]
+
+#surf_lower = lm(LEL_Bengal_low~surfw$d18O)
+
+var_oxy_sw = var(surfw$d18O, na.rm =T)
+var_hydro_sw = var(surfw$d2H, na.rm =T)
+c_oh_sw = cov(surfw$d18O[-which(is.na(surfw$d2H))], surfw$d2H[-which(is.na(surfw$d2H))])
+h_sw_mean = mean(surfw$d2H,na.rm=T) 
+o_sw_mean = mean(surfw$d18O) 
+
+
+```
+
+### Importing the groundwater data
+
+```{r include=F}
+Sas_UKan_GW <- read.csv('sashidharan_2013_UKansas_final_GW.csv', as.is = T)
+Chak_EES_GW <- read.csv('Chakravorty_EES_2009_GW.csv', as.is =T,fileEncoding="latin1")
+Stuben_AG_GW <- read.csv('Stuben_2003_AG_Malda_GW.csv', as.is =T)
+Bibhash_GW <- read.csv('Bibhash_Jessore_WB_isotopes_GW.csv',as.is =T)
+Mcarthur_2016_GW <-read.csv('Mcarthur_2016_EST_GW.csv', as.is = T)
+##Ghosal_GW <-read.csv('Ghosal_2014_GW.csv', as.is = T) ##NO ISOTOPE DATA
+Desbarats_GW <-read.csv('Desbarats_2014_2017_GW.csv', as.is = T)
+Stute_GW <-read.csv('Stutue_WRR_2007_GW.csv', as.is = T)
+Sengupta_GW <-read.csv('Sengupta_ESandT_2008_GW.csv', as.is = T)
+Datta_GW <-read.csv('Datta_JGR_2011_GW.csv', as.is = T)
+```
+
+<br/>
+
+### Subseting only the isotope data 
+
+This is done to make this data comparable to the data obtained from the database
+
+```{r include=FALSE}
+Sas_UKan_GW= data.frame(cbind(Sas_UKan_GW$Sample_ID, Sas_UKan_GW$Country, Sas_UKan_GW$Study_ID, Sas_UKan_GW$Water_Source, Sas_UKan_GW$Depth_m,Sas_UKan_GW$d18O, Sas_UKan_GW$d2H, Sas_UKan_GW$Long, Sas_UKan_GW$Long))
+colnames(Sas_UKan_GW) = c("Sample_ID", "Country", "Study_ID", "Water_Source","Depth_m", "d18O","d2H","Long", "Lat")
+
+sapply(Sas_UKan_GW, class)
+
+Chak_GW= data.frame(cbind(Chak_EES_GW$Sample_ID, Chak_EES_GW$Country, Chak_EES_GW$Study_ID, Chak_EES_GW$Water_Source, Chak_EES_GW$Depth_m, Chak_EES_GW$d18O, Chak_EES_GW$d2H, Chak_EES_GW$Long, Chak_EES_GW$Lat))
+colnames(Chak_GW) = c("Sample_ID", "Country", "Study_ID", "Water_Source","Depth_m", "d18O","d2H","Long", "Lat")
+
+
+
+Stuben_GW= data.frame(cbind(Stuben_AG_GW$Sample_ID, Stuben_AG_GW$Country, Stuben_AG_GW$Study_ID, Stuben_AG_GW$Water_Source, 
+                            Stuben_AG_GW$Depth_m,Stuben_AG_GW$d18O, Stuben_AG_GW$d2H, Stuben_AG_GW$Long, Stuben_AG_GW$Lat))
+colnames(Stuben_GW) = c("Sample_ID", "Country", "Study_ID", "Water_Source","Depth_m", "d18O","d2H","Long", "Lat")
+
+
+
+Bibhash_GW= data.frame(cbind(Bibhash_GW$Sample_ID, Bibhash_GW$Country, Bibhash_GW$Study_ID, Bibhash_GW$Water_Source, 
+                             Bibhash_GW$Depth_m, Bibhash_GW$d18O, Bibhash_GW$d2H, Bibhash_GW$Long, Bibhash_GW$Lat))
+colnames(Bibhash_GW) = c("Sample_ID", "Country", "Study_ID", "Water_Source","Depth_m", "d18O","d2H","Long", "Lat")
+
+Mcarthur_2016_GW = data.frame(cbind(Mcarthur_2016_GW$Sample_ID, Mcarthur_2016_GW$Country, Mcarthur_2016_GW$Study_ID, Mcarthur_2016_GW $Water_Source, 
+                                    Mcarthur_2016_GW $Depth_m, Mcarthur_2016_GW $d18O, Mcarthur_2016_GW $d2H, Mcarthur_2016_GW$Long, Mcarthur_2016_GW$Lat))
+colnames(Mcarthur_2016_GW ) = c("Sample_ID", "Country", "Study_ID", "Water_Source","Depth_m", "d18O","d2H","Long", "Lat")
+
+Desbarats_GW = data.frame(cbind(Desbarats_GW $Sample_ID, Desbarats_GW$Country, Desbarats_GW$Study_ID, Desbarats_GW$Water_Source, Desbarats_GW$Depth_m, Desbarats_GW$d18O, Desbarats_GW$d2H, Desbarats_GW$Long, Desbarats_GW$Lat))
+colnames(Desbarats_GW) = c("Sample_ID", "Country", "Study_ID", "Water_Source","Depth_m", "d18O","d2H","Long", "Lat")
+
+Stute_GW = data.frame(cbind(Stute_GW $Sample_ID, Stute_GW$Country, Stute_GW$Study_ID, Stute_GW$Water_Source, 
+                            Stute_GW$Depth_m, Stute_GW$d18O, Stute_GW$d2H, Stute_GW$Long, Stute_GW$Lat))
+colnames(Stute_GW) = c("Sample_ID", "Country", "Study_ID", "Water_Source","Depth_m", "d18O","d2H","Long", "Lat")
+
+
+Sengupta_GW = data.frame(cbind(Sengupta_GW $Sample_ID, Sengupta_GW$Country, Sengupta_GW$Study_ID, Sengupta_GW$Water_Source, 
+                               Sengupta_GW$Depth_m, Sengupta_GW$d18O, Sengupta_GW$d2H, Sengupta_GW$Long, Sengupta_GW$Lat))
+colnames(Sengupta_GW) = c("Sample_ID", "Country", "Study_ID", "Water_Source","Depth_m", "d18O","d2H", "Long", "Lat")
+
+
+Datta_GW = data.frame(cbind(Datta_GW $Sample_ID, Datta_GW$Country, Datta_GW$Study_ID, Datta_GW$Water_Source, 
+                            Datta_GW$Depth_m, Datta_GW$d18O, Datta_GW$d2H, Datta_GW$Long, Datta_GW$Lat))
+colnames(Datta_GW) = c("Sample_ID", "Country", "Study_ID", "Water_Source","Depth_m", "d18O","d2H","Long", "Lat")
+```
+
+
+<br/>
+
+## We will combine the database data with non-database data
+
+### Groundwater data
+
+```{r include=F}
+isotope_bengal_gw = data.frame((rbind(Datta_GW,Sengupta_GW, Stute_GW, Desbarats_GW ,Mcarthur_2016_GW,
+                                      Bibhash_GW, Stute_GW, Stuben_GW, Chak_GW, Sas_UKan_GW)))
+isotope_bengal_gw$d18O <- as.numeric(levels(isotope_bengal_gw$d18O))[isotope_bengal_gw$d18O]
+isotope_bengal_gw$d2H <- as.numeric(levels(isotope_bengal_gw$d2H))[isotope_bengal_gw$d2H]
+isotope_bengal_gw$Long <- as.numeric(levels(isotope_bengal_gw$Long))[isotope_bengal_gw$Lat]
+isotope_bengal_gw$Lat <- as.numeric(levels(isotope_bengal_gw$Lat))[isotope_bengal_gw$Lat]
+
+
+
+sapply(isotope_bengal_gw, class)
+
+isotope_bengal_gw = data.frame((rbind(isotope_bengal_gw,iso_Beng_gw)))
+isotope_bengal_gw$Depth_m <- as.numeric(levels(isotope_bengal_gw$Depth_m))[isotope_bengal_gw$Depth_m]
+
+sapply(isotope_bengal_gw, class)
+
+isotope_bengal_gw$Dex = isotope_bengal_gw$d2H - 8*isotope_bengal_gw$d18O
+which(isotope_bengal_gw$Dex < -20)
+isotope_bengal_gw = isotope_bengal_gw[-2805,]
+```
+
+
+<br/>
+
+```{r echo = F}
+gw_d18O <- isotope_bengal_gw[order(isotope_bengal_gw$Depth_m),]
+rem = which(is.na(gw_d18O$d18O))
+gw_d18O = gw_d18O[-rem,]
+rem1 = which(is.na(gw_d18O$Depth_m))
+gw_d18O = gw_d18O[-rem1,] 
+gw_d18O = gw_d18O[order(gw_d18O$Depth_m),]
+```
+
+
+<br/>
+
+### let's divide the data in 3 groups
+
+```{r}
+shallow = gw_d18O %>% 
+  filter(Depth_m <50)
+
+inter = gw_d18O %>% 
+  filter(Depth_m>50 & Depth_m <150)
+
+deep = gw_d18O %>% 
+  filter(Depth_m>150)
+
+deep1 = gw_d18O %>% 
+  filter(Depth_m>150 & Study_ID != "VanGeen_bangladesh_deep_wells_2015")
+
+
+lex = gw_d18O %>% 
+  filter(Depth_m>150 & Study_ID == "VanGeen_bangladesh_deep_wells_2015")
+
+lex = lex[sample(nrow(lex), 70), ]
+
+iso_gw = rbind(shallow,inter,deep1,lex)
+rem_h = which(is.na(iso_gw$d2H))
+iso_gw = iso_gw[-rem_h,]
+#iso_gw_deep = deep_isotope1 
+
+
+#######get repeat isotope values out
+
+iso_gw_rem_duplicates = iso_gw[,c(5,6,7,10)]
+iso_gw = iso_gw[-which(duplicated(iso_gw_rem_duplicates)),]
+```
+ 
+ 
+<br/>
+
+### calculations
+
+```{r}
+
+oxy_gw = iso_gw[c(1:nrow(iso_gw) ),6]
+hydro_gw = iso_gw[c(1:nrow(iso_gw)),7]
+
+rem_data = c(which(hydro_gw - 8.1*oxy_gw - 10.2 >= 0),which(hydro_gw - 8.1*oxy_gw -10.2 <= -10.2))
+
+hydro_rem_mix_model = hydro_gw[rem_data]
+hydro_mix_model = hydro_gw[-rem_data]
+oxy_rem_mix_model = oxy_gw[rem_data]
+oxy_mix_model = oxy_gw[-rem_data]
+
+mean_precip_prior_dist <-vector()
+mean_river_prior_dist <-vector()
+mean_surf_prior_dist <-vector()
+mean_precip_prior_raw <-vector()
+mean_river_prior_raw <-vector()
+mean_surf_prior_raw <-vector()
+mean_precip_sol <-vector()
+mean_river_sol <-vector()
+mean_surf_sol <-vector()
+raw_surf <-vector()
+raw_river <-vector()
+raw_precip <-vector()
+dist_precip_gw <-vector()
+dist_river_gw <-vector()
+dist_surf_gw <-vector()
+
+#########Lets calculate the prior
+prior_surf <-vector()
+prior_river <-vector()
+prior_precip <-vector()
+Avg_surf <-vector()
+  Avg_river <-vector()
+Avg_precip <-vector()
+precip_a <-vector()
+ river_a <-vector()
+surf_a <-vector()
+```
+
+
+#### calculate the distance between groundwater sample and the endmembers
+```{r}
+for (k in 1: nrow(oxy_mix_model)){
+oxy_river = -8
+hydro_river = oxy_river*(as.numeric(LMWL_Bengal$coefficients[2])) +as.numeric(LMWL_Bengal$coefficients[1])
+dist_precip_gw[k] = abs(8* oxy_mix_model[k] - hydro_mix_model[k]  + 10.2)/(65^0.5)
+dist_river_gw[k] = (((oxy_mix_model[k] - oxy_river)^2 + (hydro_mix_model[k] - hydro_river)^2))^0.5
+dist_surf_gw[k] = abs(5.6* oxy_mix_model[k] - hydro_mix_model[k]  -7.6)/((5.6*5.6 +1)^0.5)
+prior_surf[k] = 1/dist_surf_gw[k]/(1/dist_surf_gw[k] + 1/dist_river_gw[k]+ 1/dist_precip_gw[k])
+prior_river[k] = 1/dist_river_gw[k]/(1/dist_surf_gw[k] + 1/dist_river_gw[k]+ 1/dist_precip_gw[k])
+prior_precip[k] = 1/dist_precip_gw[k]/(1/dist_surf_gw[k] + 1/dist_river_gw[k]+ 1/dist_precip_gw[k])
+
+}
+```
+
+
+### plot prior calculations for the model
+```{r}
+##################plot prior############
+library(viridis)
+library(gridExtra)
+library(RColorBrewer)
+precip =  ggplot()+ geom_point(aes(x=oxy_mix_model,y=hydro_mix_model, fill = prior_precip), shape  = 21, size = 2.5) +
+  geom_point(aes(x=-8,y=-54.5), shape  = 22, size = 4, color = "purple", stroke = 2)+
+  geom_abline(intercept = as.numeric(LMWL_Bengal$coefficients[1]), 
+              slope = as.numeric(LMWL_Bengal$coefficients[2]), color="black", linetype="solid", size=0.5)+
+    geom_abline(intercept = as.numeric(LEL_Bengal$coefficients[1]), 
+              slope = as.numeric(LEL_Bengal$coefficients[2]), color="red", linetype="dashed", size=0.5)+
+  scale_fill_viridis(option = "D")+  scale_x_continuous(name="18O",limits=c(-8, -1)) +
+  scale_y_continuous(name="2H", limits=c(-55, -5)) + theme_bw() +
+theme(legend.position = "none") +  ggtitle("Prior - Precipitation")
+
+river =  ggplot()+ geom_point(aes(x=oxy_mix_model,y=hydro_mix_model, fill = prior_river), shape  = 21, size = 2.5) +
+  geom_point(aes(x=-8,y=-54.5), shape  = 22, size = 4, color = "purple", stroke = 2)+
+  geom_abline(intercept = as.numeric(LMWL_Bengal$coefficients[1]), 
+              slope = as.numeric(LMWL_Bengal$coefficients[2]), color="black", linetype="solid", size=0.5)+
+    geom_abline(intercept = as.numeric(LEL_Bengal$coefficients[1]), 
+              slope = as.numeric(LEL_Bengal$coefficients[2]), color="red", linetype="dashed", size=0.5)+
+  scale_fill_viridis(option = "D")+  scale_x_continuous(name="18O",limits=c(-8, -1)) +
+  scale_y_continuous(name="2H", limits=c(-55, -5)) + theme_bw() +
+theme(legend.position = "none") +  ggtitle("Prior - River")
+
+surf =  ggplot()+ geom_point(aes(x=oxy_mix_model,y=hydro_mix_model, fill = prior_surf), shape  = 21, size = 2.5) +
+  geom_point(aes(x=-8,y=-54.5), shape  = 22, size = 4, color = "purple", stroke = 2)+
+  geom_abline(intercept = as.numeric(LMWL_Bengal$coefficients[1]), 
+              slope = as.numeric(LMWL_Bengal$coefficients[2]), color="black", linetype="solid", size=0.5)+
+    geom_abline(intercept = as.numeric(LEL_Bengal$coefficients[1]), 
+              slope = as.numeric(LEL_Bengal$coefficients[2]), color="red", linetype="dashed", size=0.5)+
+  scale_fill_viridis(option = "D")+  scale_x_continuous(name="18O",limits=c(-8, -1)) +
+  scale_y_continuous(name="2H", limits=c(-55, -5)) + theme_bw() +  theme(legend.position = c(0.9, 0.3))+
+  ggtitle("Prior - Standing water")
+  
+grid.arrange(precip, river, surf, nrow=2)
+
+```
+
+### which surface samples could be used for a given groundwater sample
+```{r}
+#########################################number of possible surface water sources for each sample
+surf_end <- vector()
+for(i in 1:length(oxy_mix_model)){
+  surf_end[i] =  length(unique(c(which((hydro_mix_model[i] -isotope_bengal_sw$d2H)/(oxy_mix_model[i] - isotope_bengal_sw$d18O) > 8.1),which(oxy_mix_model[i] <= isotope_bengal_sw$d18O & hydro_mix_model[i] <= isotope_bengal_sw$d2H))))
+}
+```
+
+```{r}
+####################
+#######################calcuation of mixing model
+#################
+ddd =1
+  n = 496*ddd
+mat_row = length(oxy_mix_model)
+#mat_row = 100
+mat_col=nrow(isotope_bengal_sw)
+mat_col = 356
+isotope_all_oxy= array(NA, c(mat_col,n,mat_row))
+isotope_all_hydro= array(NA, c(mat_col,n,mat_row))
+isotope_used = array(NA, c( mat_col,n,mat_row))
+source_used = array(NA,  c( mat_col,n,mat_row))
+source_input = array(NA,  c( mat_col,n,mat_row))
+
+isotope_oxy_used = array(NA, c(mat_col,n,mat_row))
+ source_oxy_used = array(NA, c(mat_col,n,mat_row))
+ isotope_hydro_used = array(NA, c(mat_col,n,mat_row))
+ source_hydro_used = array(NA, c(mat_col,n,mat_row))
+contri_surf = array(NA, c(mat_col,n,mat_row))
+ contri_precip = array(NA, c(mat_col,n,mat_row))
+
+for (k in 1: mat_row){
+
+oxy_river = -8
+hydro_river = oxy_river*(as.numeric(LMWL_Bengal$coefficients[2])) +as.numeric(LMWL_Bengal$coefficients[1])
+
+###### distance between sample and river, surface and precipitation
+dist_precip_gw[k] = abs(8* oxy_mix_model[k] - hydro_mix_model[k]  + 10.2)/(65^0.5)
+dist_river_gw[k] = (((oxy_mix_model[k] - oxy_river)^2 + (hydro_mix_model[k] - hydro_river)^2))^0.5
+dist_surf_gw[k] = abs(5.6* oxy_mix_model[k] - hydro_mix_model[k]  -7.6)/((5.6*5.6 +1)^0.5)
+prior_surf[k] = 1/dist_surf_gw[k]/(1/dist_surf_gw[k] + 1/dist_river_gw[k]+ 1/dist_precip_gw[k])
+prior_river[k] = 1/dist_river_gw[k]/(1/dist_surf_gw[k] + 1/dist_river_gw[k]+ 1/dist_precip_gw[k])
+prior_precip[k] = 1/dist_precip_gw[k]/(1/dist_surf_gw[k] + 1/dist_river_gw[k]+ 1/dist_precip_gw[k])
+
+
+#######################
+
+bbb <- matrix(NA, ncol = mat_col, nrow = mat_row)
+dist <- matrix(NA, ncol = mat_col, nrow = mat_row)
+
+
+surf_source = matrix(NA, ncol = n, nrow = mat_col)
+river_source = matrix(NA, ncol = n, nrow = mat_col)
+precip_source = matrix(NA, ncol = n, nrow = mat_col)
+bbb <- matrix(NA, ncol = n, nrow = mat_col)
+dist_surf= vector()
+
+dist_precip = matrix(NA, ncol = n, nrow = mat_col)
+
+#######################start j loop
+
+for (j in 1:mat_col){
+  print(k)
+  print(j)
+  
+oxy_surf = isotope_bengal_sw$d18O[j]
+hydro_surf = isotope_bengal_sw$d2H[j]
+
+c <-vector()
+f_precip <- vector()
+f_river <-vector()
+f_surf <- vector()
+num <- vector()
+dem <- vector()
+A_prs <-vector()
+A_gps <-vector()
+A_grp <-vector()
+A_grs <-vector()
+
+
+jj1 = rbind(grt_0[sample(nrow(grt_0), precip_amount_number[1]*ddd), ],
+btw_0_2[sample(nrow(btw_0_2), precip_amount_number[2]*ddd), ],
+btw_2_8[sample(nrow(btw_2_8), sum(precip_amount_number[3],precip_amount_number[4],precip_amount_number[5])*ddd), ],
+btw_8_12[sample(nrow(btw_8_12), sum(precip_amount_number[6],precip_amount_number[7])*ddd), ],
+btw_12_14[sample(nrow(btw_12_14), precip_amount_number[8]*ddd), ],
+less_14[sample(nrow(less_14), precip_amount_number[9]*ddd), ])
+
+  oxy_precip = jj1[,1]
+  hydro_precip = jj1[,2]
+###############start i loop
+
+  for(i in 1:n){
+    
+  
+A_prs[i] = abs(0.5*(oxy_precip[i]*(hydro_river - hydro_surf) + oxy_river*(hydro_surf - hydro_precip[i]) + oxy_surf*(hydro_precip[i] - hydro_river)))
+
+A_grs[i] = abs(0.5*(oxy_mix_model[k]*(hydro_river - hydro_surf) + oxy_river*(hydro_surf - hydro_mix_model[k]) + oxy_surf*(hydro_mix_model[k]- hydro_river)))
+
+A_grp[i] = abs(0.5*(oxy_mix_model[k]*(hydro_river - hydro_precip[i]) + oxy_river*(hydro_precip[i] - hydro_mix_model[k]) + oxy_precip[i]*(hydro_mix_model[k]- hydro_river)))
+
+A_gps[i] = abs(0.5*(oxy_mix_model[k]*(hydro_surf - hydro_precip[i]) + oxy_surf*(hydro_precip[i] - hydro_mix_model[k]) + oxy_precip[i]*(hydro_mix_model[k]- hydro_surf)))
+
+
+if (abs(A_prs[i] - (A_gps[i]  + A_grp[i] +A_grs[i])) == 0){
+  
+  num[i] = ((hydro_surf - hydro_precip[i])*(oxy_mix_model[k] - oxy_precip[i]) - (oxy_surf -oxy_precip[i])*(hydro_mix_model[k]- hydro_precip[i]))
+  dem[i] = ((hydro_precip[i] - hydro_river)*(oxy_surf - oxy_precip[i]) - (oxy_precip[i] - oxy_river)*(hydro_surf - hydro_precip[i]))
+
+f_river[i] = num[i]/dem[i]
+  
+f_precip[i] = (oxy_mix_model[k] - oxy_surf + f_river[i]*(oxy_surf - oxy_river))/(oxy_precip[i] - oxy_surf)
+  
+f_surf[i] = 1 - f_river[i] - f_precip[i]
+} else {
+  f_river[i] = -999
+  
+f_precip[i] = -999
+  
+f_surf[i] = -999
+}
+ 
+surf_source[j,i] = f_surf[i]
+precip_source[j,i] = f_precip[i]
+river_source[j,i] = f_river[i]
+source_input[j,i,k] = oxy_surf
+if(surf_source[j,i] >0){
+ bbb[j,i] = 1
+ isotope_oxy_used[j,i,k] = oxy_precip[i]
+ source_oxy_used[j,i,k] = oxy_surf
+ isotope_hydro_used[j,i,k] = hydro_precip[i]
+ source_hydro_used[j,i,k] = hydro_surf
+contri_surf[j,i,k] = f_surf[i]
+ contri_precip[j,i,k] = f_precip[i]
+}
+isotope_all_oxy[j,i,k] = oxy_precip[i]
+isotope_all_hydro[j,i,k] = hydro_precip[i]
+ }
+###end loop i
+
+
+}
+####end loop j
+
+raw_surf[k] = mean(surf_source[which(surf_source>0)]) ####raw mean of surf
+raw_river[k] = mean(river_source[which(surf_source>0)])   ####raw mean of river
+raw_precip[k] = mean(precip_source[which(surf_source>0)])   ####raw mean of precip
+
+}
+########end loop k
+```
+
+
+
